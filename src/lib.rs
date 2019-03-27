@@ -35,6 +35,21 @@ impl ThreadPool {
     }
 }
 
+// This trait and it's implementation are to trick the rust compiler into being okay with us
+// moving a closure out of it's box and calling it as self. I don't understand quite why it doesn't
+// just work with us calling (*job)() below but rust is a work in progress
+trait FnBox {
+    fn call_box(self: Box<Self>);
+}
+
+impl<F: FnOnce()> FnBox for F {
+    fn call_box(self: Box<F>) {
+        (*self)()
+    }
+}
+
+type Job = Box<dyn FnBox + Send + 'static>;
+
 struct Worker {
     id: usize,
     thread: thread::JoinHandle<()>,
@@ -42,14 +57,16 @@ struct Worker {
 
 impl Worker {
     fn new(id: usize, receiver: Arc<Mutex<mpsc::Receiver<Job>>>) -> Worker {
-        let thread = thread::spawn(|| {
-            let job = receiver.lock().unwrap().recv().unwrap();
-            println!("Worker {} got a job; executing now.", id);
-            (*job)();
+        // Move here allows the thread to take ownership of the receiver
+        let thread = thread::spawn(move || {
+            loop {
+                let job = receiver.lock().unwrap().recv().unwrap();
+                println!("Worker {} got a job; executing now.", id);
+
+                job.call_box();
+            }
         });
 
         Worker { id, thread }
     }
 }
-
-type Job = Box<FnOnce() + Send + 'static>;
